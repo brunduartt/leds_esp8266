@@ -1,0 +1,8 @@
+body { padding-bottom: 70px; 
+    color: #fff !important;
+    background-color: #222 !important;
+}
+.navbar-default {
+    background-color: #202020;
+    border-color: #000;
+}
