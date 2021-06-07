@@ -51,7 +51,7 @@ void checkPingTimer() {
       Serial.println("Connected, ready to ping");
       HTTPClient http;
       
-      http.begin(serverName, fingerPrint);
+      //http.begin(serverName, fingerPrint);
       http.addHeader("Content-Type", "application/json");
       String deviceName = "\"deviceName\":\"" + nameString;
       String localIp = WiFi.localIP().toString();

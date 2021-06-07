@@ -195,6 +195,14 @@ String getAmountDivisions() {
   }
 }
 
+String getUseSolidColor() {
+  if(changeFullStrip) {
+    return String(fullStrip.useSolidColor);
+  } else {
+    return String(intervals[currentChangingInterval].useSolidColor);
+  }
+}
+
 FieldList fields = {
   { "interval", "Intervals", SectionFieldType },
   { "fullStrip", "Entire Strip/Intervals", BooleanFieldType, 0, 1, getFullStrip, getNull, true },
@@ -209,6 +217,7 @@ FieldList fields = {
   { "brightness", "Brightness", NumberFieldType, 1, 255, getBrightness },
   { "pattern", "Pattern", SelectFieldType, 0, patternCount, getPattern, getPatterns },
   { "invertDirection", "Invert Direction", BooleanFieldType, 0, 1, getInvertDirection },
+  { "useSolidColor", "Use Solid Color as Palette", BooleanFieldType, 0, 1, getUseSolidColor },
   { "palette", "Palette", SelectFieldType, 0, paletteCount, getPalette, getPalettes },
   { "speed", "Speed", NumberFieldType, 1, 255, getSpeed },
   { "autoplay", "Autoplay", SectionFieldType },

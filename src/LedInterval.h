@@ -38,6 +38,7 @@ class LedInterval {
         uint8_t twinkleSpeed = 4;
         bool clear = false;
         bool inverted = false;
+        bool useSolidColor = false;
         CRGBPalette16 gTargetPalette;
         CRGBPalette16 gCurrentPalette;
         CRGBPalette16 twinkleFoxPalette;

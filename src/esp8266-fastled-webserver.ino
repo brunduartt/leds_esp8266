@@ -16,15 +16,17 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-//#define FASTLED_ALLOW_INTERRUPTS 1
+//#define FASTLED_ALLOW_INTERRUPTS 0
 //#define INTERRUPT_THRESHOLD 1
 #define FASTLED_INTERRUPT_RETRY_COUNT 0
 #define FASTLED_ESP8266_RAW_PIN_ORDER
+#define BUFFER_LEN 1024
 #include <FastLED.h>
 FASTLED_USING_NAMESPACE
 extern "C" {
 #include "user_interface.h"
 }
+#include <WiFiUdp.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266WiFi.h>
 //#include <ESP8266mDNS.h>
@@ -48,23 +50,29 @@ extern "C" {
 //248
 //247 - parede
 //246 - escrivaninha
-IPAddress ip(192,168,0,247);  //Uncomment if apMode = false  
+IPAddress ip(192,168,0,246);  //Uncomment if apMode = false  
 IPAddress gateway(192,168,0,254);   
 IPAddress subnet(255,255,255,0);
 
 ESP8266WebServer webServer(80);
 //WebSocketsServer webSocketsServer = WebSocketsServer(81);
 ESP8266HTTPUpdateServer httpUpdateServer;
+
+WiFiUDP port;
+char packetBuffer[BUFFER_LEN];
+unsigned int localPort = 7777;
+
 #include "FSBrowser.h"
+//4 = d2
 #define DATA_PIN      4
 #define LED_TYPE      WS2812B
 #define COLOR_ORDER   GRB
 #define NUM_LEDS_PER_STRIP 300
-#define NUM_STRIPS 2
+#define NUM_STRIPS 1
 #define NUM_LEDS      (NUM_LEDS_PER_STRIP * NUM_STRIPS)
 #define MILLI_AMPS         2000 // IMPORTANT: set the max milli-Amps of your power supply (4A = 4000mA)
 #define FRAMES_PER_SECOND  120  // here you can control the speed. With the Access Point / Web Server the animations run a bit slower.
-#define HAS_TWO_STRIPS  true //IF HAS TWO STRIPS IN THE SAME ESP (WILL INVERT THE POSITIONS OF THE FIRST STRIP SO THAT IT CONNECTS WITH THE SECOND ONE!)
+#define HAS_TWO_STRIPS  false //IF HAS TWO STRIPS IN THE SAME ESP (WILL INVERT THE POSITIONS OF THE FIRST STRIP SO THAT IT CONNECTS WITH THE SECOND ONE!)
 String nameString;
 
 const bool apMode = false;
@@ -135,6 +143,8 @@ uint8_t gHue = 0; // rotating "base color" used by many of the patterns
 
 CRGB solidColor = CRGB::Blue;
 
+uint8_t soundReactiveValue = 0;
+uint8_t oldSoundReactiveValue = 1;
 // scale the brightness of all pixels down
 void dimAll(byte value)
 {
@@ -175,6 +185,9 @@ PatternAndNameList patterns = {
   { heatMap,                "Heat Map" },
   { fire,                   "Fire" },
   { water,                  "Water" },
+  { soundReactiveBars,      "Sound Reactive Bars" },
+  { soundReactiveBrightness,"Sound Reactive Brightness" },
+  { soundReactiveBrightnessAndSpeed,"Sound Reactive Brightness And Speed" },
   // twinkle patterns
   { rainbowTwinkles,        "Rainbow Twinkles" },
   { snowTwinkles,           "Snow Twinkles" },
@@ -216,7 +229,6 @@ const CRGBPalette16 palettes[] = {
     ForestColors_p,
     PartyColors_p,
     HeatColors_p,
-    IceColors_p,
     Euphoria_p,
     Euphoria_2_p,
     Euphoria_3_p,
@@ -266,7 +278,6 @@ const String paletteNames[paletteCount] = {
     "Forest",
     "Party",
     "Heat",
-    "Ice",
     "Euphoria",
     "Euphoria 2",
     "Euphoria 3",
@@ -314,8 +325,8 @@ void setup() {
   delay(100);
   Serial.setDebugOutput(true);
 
-  FastLED.addLeds<WS2812B_PORTA,NUM_STRIPS>(leds, NUM_LEDS_PER_STRIP);         // for WS2812 (Neopixel)
-  //FastLED.addLeds<LED_TYPE,DATA_PIN,CLK_PIN,COLOR_ORDER>(leds, NUM_LEDS); // for APA102 (Dotstar)
+  //FastLED.addLeds<WS2812B_PORTA,NUM_STRIPS>(leds, NUM_LEDS_PER_STRIP);         // for WS2812 (Neopixel)
+  FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS); // for APA102 (Dotstar)
   FastLED.setDither(false);
   FastLED.setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(255);
@@ -388,7 +399,9 @@ void setup() {
     Serial.printf("Connecting to %s\n", ssid);
     if (String(WiFi.SSID()) != String(ssid)) {
       WiFi.begin(ssid, password);
+      port.begin(localPort);
     }
+    
     Serial.println(WiFi.localIP());
   }
   httpUpdateServer.setup(&webServer);
@@ -552,6 +565,12 @@ webServer.on("/amountDivisions", HTTP_POST, []() {
     sendInt(currentPatternIndex);
   });
 
+  webServer.on("/soundReactive", HTTP_POST, []() {
+    String value = webServer.arg("value");
+    soundReactiveValue = value.toInt();
+    sendInt(soundReactiveValue);
+  });
+
   webServer.on("/patternName", HTTP_POST, []() {
     String value = webServer.arg("value");
     setPatternName(value);
@@ -575,6 +594,13 @@ webServer.on("/amountDivisions", HTTP_POST, []() {
     setInvertDirection(value.toInt());
     sendInt(value.toInt());
   });
+
+  webServer.on("/useSolidColor", HTTP_POST, []() {
+    String value = webServer.arg("value");
+    setUseSolidColor(value.toInt());
+    sendInt(value.toInt());
+  });
+
   webServer.on("/interval", HTTP_POST, []() {
     String value = webServer.arg("value");
     setChangingInterval(value.toInt());
@@ -725,7 +751,7 @@ void broadcastString(String name, String value)
 void loop() {
   // Add entropy to random number generator; we use a lot of it.
   random16_add_entropy(random(65535));
-
+  //ESP.wdtFeed();
   //  dnsServer.processNextRequest();
   //  webSocketsServer.loop();
   webServer.handleClient();
@@ -746,17 +772,16 @@ void loop() {
       Serial.println(" in your browser");
     }
   }
-  EVERY_N_SECONDS(60) {
-     Serial.println(WiFi.localIP());
-  }
-  checkPingTimer();
+ // checkPingTimer();
 
   //  handleIrInput();
   if (power == 0) {
     fill_solid(leds, NUM_LEDS, CRGB::Black);
     FastLED.show();
+    yield();
     delay(1000 / FRAMES_PER_SECOND);
     return;
+    //yield();
   }
 
   // EVERY_N_SECONDS(10) {
@@ -793,6 +818,7 @@ void loop() {
   }
   // Call the current pattern function once, updating the 'leds' array
   //Serial.println("isLoaded?");
+  onPacket();
   if(loaded) {
     //Serial.println("YES");
     if(changeFullStrip) {
@@ -823,8 +849,7 @@ void loop() {
   }
   //patterns[currentPatternIndex].pattern();
 
-  FastLED.show();
-
+  //FastLED.show();
   // insert a delay to keep the framerate modest
   FastLED.delay(1000 / FRAMES_PER_SECOND);
 }
@@ -1073,6 +1098,17 @@ void loop() {
 //  }
 //}
 
+void onPacket() {
+  // Read data over socket
+  int packetSize = port.parsePacket();
+  // If packets have been received, interpret the command
+  if (packetSize) {
+    int len = port.read(packetBuffer, 1024);
+    soundReactiveValue = (uint8_t) packetBuffer[0];
+    packetBuffer[len] = 0;
+  }
+}
+
 void loadSettings()
 {
   loaded = false;
@@ -1089,7 +1125,7 @@ void loadSettings()
     currentPaletteIndex = paletteCount - 1;
   Serial.println();
   Serial.println("CREATING FULL STRIP");
-  fullStrip = LedInterval(0, NUM_LEDS, NUM_LEDS, currentPaletteIndex, currentPatternIndex);
+  fullStrip = LedInterval(0, NUM_LEDS, NUM_LEDS, 0, 0);
   fullStrip.set_gTargetPalette(gGradientPalettes[0]);
   Serial.println("CREATED FULL STRIP");
   brightness = EEPROM.read(0);
@@ -1179,19 +1215,24 @@ void setSolidColor(CRGB color)
 {
   setSolidColor(color.r, color.g, color.b);
 }
-
 void setSolidColor(uint8_t r, uint8_t g, uint8_t b)
 {
   solidColor = CRGB(r, g, b);
   if(changeFullStrip) {
     fullStrip.solidColor = solidColor;
+    if(fullStrip.useSolidColor)
+      fullStrip.gCurrentPalette = CRGBPalette16(fullStrip.solidColor);
   } else{
     if(changeAllIntervals) {
       for(int i = 0; i < intervalsAmount; i++) {
         intervals[i].solidColor = solidColor;
+        if(intervals[i].useSolidColor)
+          intervals[i].gCurrentPalette = CRGBPalette16(intervals[i].solidColor);
       }
     } else {
       intervals[currentChangingInterval].solidColor = solidColor;
+      if(intervals[currentChangingInterval].useSolidColor)
+       intervals[currentChangingInterval].gCurrentPalette = CRGBPalette16(intervals[currentChangingInterval].solidColor);
     }
   }
   EEPROM.write(2, r);
@@ -1199,7 +1240,7 @@ void setSolidColor(uint8_t r, uint8_t g, uint8_t b)
   EEPROM.write(4, b);
   EEPROM.commit();
 
-  setPattern(solidColorPaletteIndex);
+  //setPattern(solidColorPaletteIndex);
 
   broadcastString("color", String(solidColor.r) + "," + String(solidColor.g) + "," + String(solidColor.b));
 }
@@ -1342,28 +1383,63 @@ void setInvertDirection(bool value)
   reloadPattern = true;
 }
 
+
+void setUseSolidColor(bool value)
+{
+  if(value) {
+    if(changeFullStrip) {
+        fullStrip.gCurrentPalette = CRGBPalette16(fullStrip.solidColor);
+        fullStrip.useSolidColor = true;
+      } else {
+        if(changeAllIntervals) {
+          for(int i = 0; i < intervalsAmount; i++) {
+            intervals[i].gCurrentPalette = CRGBPalette16(intervals[i].solidColor);
+            intervals[i].useSolidColor = true;
+          }
+        } else {
+          intervals[currentChangingInterval].useSolidColor = true;
+          intervals[currentChangingInterval].gCurrentPalette = CRGBPalette16(intervals[currentChangingInterval].solidColor);
+        }
+      }
+  } else {
+    setPalette(NULL);
+  }
+  
+}
+
 void setPalette(uint8_t value)
 {
-  if (value >= paletteCount)
+  oldSoundReactiveValue = 0;
+  soundReactiveValue = 1;
+  if (value != NULL && value >= paletteCount)
     value = paletteCount - 1;
   if(changeFullStrip) {
+    if(value == NULL) {
+      value = fullStrip.paletteIndex;
+    }
+    fullStrip.useSolidColor = false;
     fullStrip.setPaletteIndex(value);
     fullStrip.gCurrentPalette = palettes[value];
   } else {
     if(changeAllIntervals) {
       for(int i = 0; i < intervalsAmount; i++) {
+        if(value == NULL) {
+          value = intervals[i].paletteIndex;
+        }
+        intervals[i].useSolidColor = false;
         intervals[i].setPaletteIndex(value);
         intervals[i].gCurrentPalette = palettes[value];
       }
     } else {
+      if(value == NULL) {
+        value = intervals[currentChangingInterval].paletteIndex;
+      }
+      intervals[currentChangingInterval].useSolidColor = false;
       intervals[currentChangingInterval].setPaletteIndex(value);
       intervals[currentChangingInterval].gCurrentPalette = palettes[value];
     }
   }
   currentPaletteIndex = value;
-
-  EEPROM.write(8, currentPaletteIndex);
-  EEPROM.commit();
 
   broadcastInt("palette", currentPaletteIndex);
 }
@@ -2056,6 +2132,55 @@ void colorsPalette(LedInterval* interval) {
     nblend(leds[interval->getPosition(i)], ColorFromPalette(interval->gCurrentPalette, beat + i, 255), 255);
   }
 }
+
+
+void soundReactiveBars(LedInterval* interval) {
+    random16_add_entropy(random(256));
+    uint8_t beat = beat8( interval->speed, 0);
+    CRGB color = ColorFromPalette(interval->gCurrentPalette, beat, 255);
+    double value =  (soundReactiveValue*((interval->sparking*1.0)/255.0))/255;
+    int position = int(value * (interval->NUMLEDS));
+    for(int i = 0; i < interval->NUMLEDS; i++) {
+      CRGB posColor = CRGB::Black;
+      if(i < position && value >= interval->cooling) {
+        posColor = color;
+      }
+      nblend(leds[interval->getPosition(i)], posColor, 255);
+    }
+}
+
+
+void soundReactiveBrightness(LedInterval* interval) {
+    random16_add_entropy(random(256));
+    uint8_t beat = beat8( interval->speed, 0);
+    CRGB color;
+    double value = soundReactiveValue*((interval->sparking*1.0)/255.0);
+    for(int i = 0; i < interval->NUMLEDS; i++) {
+      if(value < interval->cooling) {
+        color = CRGB::Black;
+      } else {
+        color = ColorFromPalette(interval->gCurrentPalette, beat, int(value));
+      }
+      nblend(leds[interval->getPosition(i)], color, 255);
+    }
+}
+
+
+void soundReactiveBrightnessAndSpeed(LedInterval* interval) {
+    random16_add_entropy(random(256));
+    double value = soundReactiveValue*((interval->sparking*1.0)/255.0);
+    uint8_t beat = beat8((soundReactiveValue * (interval->speed/511.0)), 0);
+    CRGB color;
+    for(int i = 0; i < interval->NUMLEDS; i++) {
+      if(value < interval->cooling) {
+        color = CRGB::Black;
+      } else {
+        color = ColorFromPalette(interval->gCurrentPalette, beat, int(value));
+      }
+      nblend(leds[interval->getPosition(i)], color, 255);
+    }
+}
+
 // Alternate rendering function just scrolls the current palette
 // across the defined LED strip.
 void palettetest( CRGB* ledarray, uint16_t numleds, const CRGBPalette16& gCurrentPalette)
